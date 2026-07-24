@@ -5,10 +5,7 @@ import DecryptedText from './DecryptedText'
 import GridScan from './GridScan'
 import './App.css'
 
-const API_BASE = import.meta.env.VITE_API_BASE
-  || (typeof window !== 'undefined' && window.location.port === '5173'
-    ? 'http://127.0.0.1:8000'
-    : '')
+const API_BASE = import.meta.env.VITE_API_BASE || ''
 
 // ─── 🤖 Agent Workbench Panel ────────────────────────────────────────────────
 function AgentWorkbenchPanel() {
@@ -2019,7 +2016,7 @@ function App() {
             borderTop: '1px solid var(--border-subtle)',
             textAlign: 'center', fontSize: 12, color: 'var(--text-muted)'
           }}>
-            ChainVigil v1.0.0 — Cross-Channel Mule Detection using Graph Intelligence & GNN
+            MuleTrace v1.0.0 — Autonomous Agentic AML & Cross-Channel Fraud Intelligence
           </footer>
         </div>
       </main>

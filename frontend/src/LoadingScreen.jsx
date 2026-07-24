@@ -45,7 +45,7 @@ export function LoadingScreen() {
           margin: '0 0 8px 0',
           letterSpacing: '-0.5px',
         }}>
-          ChainVigil
+          MuleTrace
         </h1>
         <p style={{
           fontSize: '13px',
