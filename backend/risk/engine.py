@@ -13,7 +13,7 @@ class RiskIntelligenceEngine:
         self.risk_scores = risk_scores
         self.pattern_detector = PatternDetector(G)
 
-    def analyze(() -> Dict[str, Any]:
+    def analyze(self) -> Dict[str, Any]:
         """Combine GNN risk scores with pattern detection results."""
         flagged_accs = [r for r in self.risk_scores if r["is_flagged"]]
         high_risk_accs = [r for r in self.risk_scores if r["risk_level"] == "HIGH"]

@@ -53,7 +53,7 @@ class PatternDetector:
                 })
         return rapid_cashouts
 
-    def detect_mule_clusters((self)) -> List[Dict[str, Any]]:
+    def detect_mule_clusters(self) -> List[Dict[str, Any]]:
         """Detect clusters of accounts sharing Devices and IPs."""
         device_nodes = [n for n, d in self.G.nodes(data=True) if d.get("entity_type") == "Device" and self.G.degree(n) > 1]
         clusters = []
