@@ -29,20 +29,20 @@ class AgentPlanner:
                 digits = re.search(r"\d+", acc_match.group(0)).group(0)
                 target_entity = f"ACC-{int(digits):05d}"
 
-        # 2. Structuring / Smurfing Intent
-        elif any(w in query_lower for w in ["structuring", "smurf", "under $10", "sub 10k", "<10k", "< 10000", "9000"]):
-            intent = "STRUCTURING_DETECTION"
-            filters["max_amount"] = 10000.0
-            filters["min_amount"] = 8000.0
-
-        # 3. Aggregation & Sub-$10k Threshold Rule Intent
-        elif any(w in query_lower for w in ["10+", "10 transactions", "count", "frequency", "sub-$10,000", "sub $10000"]):
+        # 2. Aggregation & Frequency Threshold (check BEFORE structuring to avoid "under $10" collision)
+        elif any(w in query_lower for w in ["10+ ", "10 or more", "10+ transactions", "made 10", "frequency", "multiple transactions", "how many"]):
             intent = "AGGREGATION_THRESHOLD"
             filters["threshold_amount"] = 10000.0
             filters["min_count"] = 10
 
+        # 3. Structuring / Smurfing Intent
+        elif any(w in query_lower for w in ["structuring", "smurf", "sub 10k", "<10k", "< 10000", "9000", "pattern"]):
+            intent = "STRUCTURING_DETECTION"
+            filters["max_amount"] = 10000.0
+            filters["min_amount"] = 8000.0
+
         # 4. Selective EDA / Profiling Intent
-        elif any(w in query_lower for w in ["eda", "profile", "distribution", "breakdown", "explore"]):
+        elif any(w in query_lower for w in ["eda", "profile", "distribution", "breakdown", "explore", "automated eda"]):
             intent = "BROAD_EDA_EXPLORATION"
 
         # 5. Rapid Cash-Out / Velocity Intent
