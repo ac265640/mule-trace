@@ -1,11 +1,12 @@
 """
-MuleTrace — Multi-Pattern Synthetic Data Generator
+ChainVigil — Synthetic Multi-Channel Transaction Data Generator
 
-Generates realistic banking transactions with:
-  1. Structuring / Smurfing ($9,000–$9,950 sub-threshold transfers)
-  2. Rapid Cash-Out (UPI incoming -> instant ATM cash-out)
-  3. Cross-Channel Mule Rings (shared devices & IPs across accounts)
-  4. High-velocity & Layering patterns
+Generates realistic transaction data with embedded mule ring patterns:
+ - 500+ accounts across multiple jurisdictions
+ - 2500+ transactions across UPI / ATM / Web / MobileApp channels
+ - 3-5 mule rings (clusters of 4-8 accounts) with high-velocity patterns
+ - Shared devices & IPs among mule accounts
+ - Temporal patterns mimicking real laundering behavior
 """
 
 import os
@@ -17,18 +18,39 @@ from typing import List, Dict, Tuple
 
 import numpy as np
 import pandas as pd
+from faker import Faker
 
-from backend.config import DATA_DIR, STRUCTURING_MAX_AMOUNT
+from backend.config import (
+    NUM_ACCOUNTS, NUM_TRANSACTIONS, NUM_MULE_RINGS,
+    MULE_RING_SIZE_RANGE, CHANNELS, DATA_DIR
+)
 
+fake = Faker()
+Faker.seed(42)
 random.seed(42)
 np.random.seed(42)
 
+
+# ─── Jurisdiction Risk Profiles ─────────────────────────────────────
+
 JURISDICTIONS = {
-    "IN": 0.2, "US": 0.15, "UK": 0.1, "NG": 0.6,
-    "RU": 0.55, "CN": 0.4, "AE": 0.35, "PH": 0.5
+    "IN": 0.2,    # India – low base risk
+    "US": 0.15,
+    "UK": 0.1,
+    "NG": 0.6,    # Nigeria – elevated
+    "RU": 0.55,
+    "CN": 0.4,
+    "AE": 0.35,
+    "PH": 0.5,
+    "KE": 0.45,
+    "BR": 0.3,
 }
 
-CHANNELS = ["UPI", "ATM", "WEB", "MOBILE_APP"]
+GEO_LOCATIONS = [
+    "Mumbai", "Delhi", "Bangalore", "Hyderabad", "Chennai",
+    "Lagos", "Abuja", "Moscow", "Dubai", "Manila",
+    "Nairobi", "São Paulo", "London", "New York", "Shanghai"
+]
 
 
 def _generate_device_id() -> str:
@@ -36,172 +58,755 @@ def _generate_device_id() -> str:
 
 
 def _generate_ip() -> str:
-    return f"{random.randint(1,254)}.{random.randint(1,254)}.{random.randint(1,254)}.{random.randint(1,254)}"
+    return fake.ipv4_public()
 
 
-def generate_all_data(
-    num_accounts: int = 500,
-    num_transactions: int = 2500,
-    num_mule_rings: int = 4
-) -> Dict[str, pd.DataFrame]:
-    """
-    Generate synthetic banking dataset with accounts, transactions, device mappings,
-    IP mappings, ATM withdrawals, and structuring/mule ring metadata.
-    """
-    # 1. Accounts
+def _generate_atm_id() -> str:
+    return f"ATM-{random.choice(GEO_LOCATIONS).upper()[:3]}-{random.randint(1000, 9999)}"
+
+
+# ─── Account Generation ────────────────────────────────────────────
+
+def generate_accounts(n: int = NUM_ACCOUNTS) -> pd.DataFrame:
+    """Generate n accounts with risk weights and metadata."""
     accounts = []
-    for i in range(num_accounts):
-        jur = random.choice(list(JURISDICTIONS.keys()))
+    for i in range(n):
+        jurisdiction = random.choice(list(JURISDICTIONS.keys()))
         accounts.append({
             "account_id": f"ACC-{i:05d}",
-            "holder_name": f"Customer_{i:05d}",
-            "jurisdiction": jur,
-            "jurisdiction_risk_weight": JURISDICTIONS[jur],
+            "holder_name": fake.name(),
+            "jurisdiction": jurisdiction,
+            "jurisdiction_risk_weight": JURISDICTIONS[jurisdiction],
             "account_type": random.choice(["SAVINGS", "CURRENT", "WALLET"]),
-            "is_mule": False,
+            "created_at": fake.date_between(start_date="-2y", end_date="-30d").isoformat(),
+            "is_mule": False,  # Will be updated for mule rings
         })
-    accounts_df = pd.DataFrame(accounts)
+    return pd.DataFrame(accounts)
 
-    # 2. Inject Mule Rings & Structuring Entities
+
+# ─── Mule Ring Injection ───────────────────────────────────────────
+
+def inject_mule_rings(
+    accounts_df: pd.DataFrame,
+    num_rings: int = NUM_MULE_RINGS
+) -> Tuple[pd.DataFrame, List[Dict]]:
+    """
+    Mark clusters of accounts as mule rings and return ring metadata.
+    Half of the rings are marked as 'false rings' (e.g. corporate payroll, 
+    shared expenses) which have identical topology but are legitimately NOT mules.
+    """
+    all_account_ids = accounts_df["account_id"].tolist()
     used_ids = set()
     rings = []
-    for r_idx in range(num_mule_rings):
-        ring_size = random.randint(4, 8)
-        avail = [a for a in accounts_df["account_id"] if a not in used_ids]
-        if len(avail) < ring_size:
-            break
-        members = random.sample(avail, ring_size)
-        used_ids.update(members)
 
-        shared_dev = [_generate_device_id() for _ in range(max(1, ring_size // 3))]
+    for ring_idx in range(num_rings):
+        ring_size = random.randint(*MULE_RING_SIZE_RANGE)
+        available = [a for a in all_account_ids if a not in used_ids]
+        if len(available) < ring_size:
+            break
+
+        ring_members = random.sample(available, ring_size)
+        used_ids.update(ring_members)
+
+        # Shared device & IP for mule ring (partial overlap)
+        shared_devices = [_generate_device_id() for _ in range(max(1, ring_size // 3))]
         shared_ips = [_generate_ip() for _ in range(max(1, ring_size // 3))]
-        is_fraud = (r_idx < num_mule_rings // 2 + 1)
+
+        # 50% chance of being a legitimate ring (is_fraud=False)
+        is_fraud = ring_idx < (num_rings / 2)
 
         ring_meta = {
-            "ring_id": f"MULE_RING_{r_idx:02d}",
-            "members": members,
-            "hub_account": members[0],
-            "shared_devices": shared_dev,
+            "ring_id": f"MULE_RING_{ring_idx:02d}",
+            "members": ring_members,
+            "shared_devices": shared_devices,
             "shared_ips": shared_ips,
-            "is_fraud": is_fraud
+            "hub_account": ring_members[0],  # First account is the hub
+            "is_fraud": is_fraud,            # NEW: Topological ambiguity
         }
         rings.append(ring_meta)
-        if is_fraud:
-            accounts_df.loc[accounts_df["account_id"].isin(members), "is_mule"] = True
 
-    # 3. Devices & IPs
+        mask = accounts_df["account_id"].isin(ring_members)
+        if is_fraud:
+            # Mark mule accounts in dataframe
+            accounts_df.loc[mask, "is_mule"] = True
+            
+        # Elevate jurisdiction risk for ALL ring members (fraud & false)
+        # to ensure this feature does not leak the 'is_mule' label
+        accounts_df.loc[mask, "jurisdiction_risk_weight"] = accounts_df.loc[
+            mask, "jurisdiction_risk_weight"
+        ].apply(lambda x: min(1.0, x + random.uniform(0.15, 0.35)))
+
+    return accounts_df, rings
+
+
+# ─── Device & IP Mapping ──────────────────────────────────────────
+
+def generate_device_ip_mapping(
+    accounts_df: pd.DataFrame,
+    rings: List[Dict]
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Generate device and IP mappings.
+
+    Mule accounts share devices/IPs within their ring.
+    Normal accounts are MOSTLY unique, but ~20% share devices/IPs to simulate
+    family members sharing a phone, or office workers on the same network.
+    This destroys the clean binary split of shared_device_count=0 for normals.
+    """
     device_rows = []
     ip_rows = []
-    all_devs = [_generate_device_id() for _ in range(num_accounts // 2)]
-    all_ips = [_generate_ip() for _ in range(num_accounts // 2)]
+    ring_lookup = {}
 
-    for _, row in accounts_df.iterrows():
-        acc_id = row["account_id"]
-        # check if in ring
-        ring_match = [r for r in rings if acc_id in r["members"]]
-        if ring_match:
-            r = ring_match[0]
-            dev = random.choice(r["shared_devices"])
-            ip = random.choice(r["shared_ips"])
+    for ring in rings:
+        for member in ring["members"]:
+            ring_lookup[member] = ring
+
+    # --- Build "innocent sharing" pools for normal accounts --------
+    # ~20% of normal accounts are grouped into small clusters (2-3 accounts)
+    # that share one device or IP, mimicking family/office scenarios.
+    normal_ids = [
+        acc["account_id"] for _, acc in accounts_df.iterrows()
+        if acc["account_id"] not in ring_lookup
+        and not str(acc["account_id"]).startswith("ACC-HN-")
+    ]
+    random.shuffle(normal_ids)
+    n_shared_normals = int(len(normal_ids) * 0.20)
+    shared_normal_ids = normal_ids[:n_shared_normals]
+
+    # Group into pairs/triples
+    normal_shared_device = {}  # acc_id -> shared_device_id
+    normal_shared_ip = {}      # acc_id -> shared_ip
+    i = 0
+    while i < len(shared_normal_ids):
+        cluster_size = random.randint(2, 3)
+        cluster = shared_normal_ids[i:i + cluster_size]
+        i += cluster_size
+        if len(cluster) < 2:
+            break
+        shared_dev = _generate_device_id()
+        shared_ip_addr = _generate_ip()
+        for acc_id in cluster:
+            if random.random() < 0.6:   # not all in cluster share the device
+                normal_shared_device[acc_id] = shared_dev
+            if random.random() < 0.5:   # not all share the IP
+                normal_shared_ip[acc_id] = shared_ip_addr
+    # ---------------------------------------------------------------
+
+    for _, acc in accounts_df.iterrows():
+        acc_id = acc["account_id"]
+        if acc_id in ring_lookup:
+            ring = ring_lookup[acc_id]
+            # ALL ring members (fraud + false) share devices/IPs
+            # This prevents shared_device_count from being a label proxy
+            devices = [random.choice(ring["shared_devices"])]
+            if random.random() < 0.3:
+                devices.append(_generate_device_id())
+            ips = [random.choice(ring["shared_ips"])]
+            if random.random() < 0.3:
+                ips.append(_generate_ip())
         else:
-            dev = random.choice(all_devs)
-            ip = random.choice(all_ips)
+            # Normal: own device always
+            devices = [_generate_device_id()]
+            ips = [_generate_ip()]
+            # Innocent sharing: inject shared device/IP for ~20% of normals
+            if acc_id in normal_shared_device:
+                devices.append(normal_shared_device[acc_id])
+            if acc_id in normal_shared_ip:
+                ips.append(normal_shared_ip[acc_id])
 
-        device_rows.append({"account_id": acc_id, "device_id": dev})
-        ip_rows.append({"account_id": acc_id, "ip_address": ip})
+        for dev in devices:
+            device_rows.append({"account_id": acc_id, "device_id": dev})
+        for ip in ips:
+            ip_rows.append({"account_id": acc_id, "ip_address": ip})
 
-    devices_df = pd.DataFrame(device_rows)
-    ips_df = pd.DataFrame(ip_rows)
+    return pd.DataFrame(device_rows), pd.DataFrame(ip_rows)
 
-    # 4. Transactions Generation
-    tx_list = []
-    base_time = datetime.now() - timedelta(days=60)
 
-    account_ids = accounts_df["account_id"].tolist()
+# ─── Transaction Generation ───────────────────────────────────────
 
-    # Normal Transactions
-    for t_idx in range(num_transactions - 300):
-        src, dst = random.sample(account_ids, 2)
-        amount = round(random.uniform(50, 5000), 2)
-        ch = random.choice(CHANNELS)
-        ts = base_time + timedelta(minutes=random.randint(0, 60 * 24 * 60))
-        tx_list.append({
-            "transaction_id": f"TX-{t_idx:06d}",
-            "source_account": src,
-            "target_account": dst,
-            "amount": amount,
-            "channel_type": ch,
+def generate_transactions(
+    accounts_df: pd.DataFrame,
+    rings: List[Dict],
+    n: int = NUM_TRANSACTIONS
+) -> pd.DataFrame:
+    """
+    Generate transactions mixing normal behavior with mule patterns.
+
+    Split: ~80% normal activity (incl. high-volume legit hubs), ~20% mule ring.
+    Previously 60/40 split meant mules got ~4x transactions per-account vs normals.
+    Now we flatten that ratio to ~2x by boosting normal volume and cutting mule share.
+    """
+    all_ids = accounts_df["account_id"].tolist()
+    mule_ids = accounts_df[accounts_df["is_mule"]]["account_id"].tolist()
+    normal_ids = [a for a in accounts_df[~accounts_df["is_mule"]]["account_id"].tolist()
+                  if not a.startswith("ACC-HN-")]
+
+    transactions = []
+    base_time = datetime.now() - timedelta(days=30)
+
+    # ── Normal transactions (~75%) ─────────────────────────────────
+    # Use a weighted sampler so ~15% of normal accounts act as hubs
+    # (merchants, payment aggregators) with higher transaction activity.
+    n_normal = int(n * 0.75)
+    hub_normals = random.sample(normal_ids, max(1, int(len(normal_ids) * 0.15)))
+    hub_set = set(hub_normals)
+    # Weight: hub accounts are 8x more likely to appear as source
+    weights = [8.0 if a in hub_set else 1.0 for a in normal_ids]
+    w_sum = sum(weights)
+    weights = [w / w_sum for w in weights]
+
+    for _ in range(n_normal):
+        src = np.random.choice(normal_ids, p=weights)
+        dst = random.choice([a for a in all_ids if a != src])
+        ts = base_time + timedelta(
+            days=random.randint(0, 29),
+            hours=random.randint(0, 23),
+            minutes=random.randint(0, 59),
+            seconds=random.randint(0, 59)
+        )
+        transactions.append({
+            "transaction_id": f"TXN-{uuid.uuid4().hex[:12].upper()}",
+            "source_id": src,
+            "target_id": dst,
+            "amount": round(random.uniform(100, 50000), 2),
+            "channel_type": random.choice(CHANNELS),
             "timestamp": ts.isoformat(),
+            "geo_location": random.choice(GEO_LOCATIONS),
             "is_suspicious": False,
-            "pattern_type": "NORMAL",
         })
 
-    # Structuring Transactions (Sub-$10k smurfing)
-    structuring_sources = random.sample(account_ids, 5)
-    structuring_target = random.choice(account_ids)
-    t_cnt = num_transactions - 300
+    # ── Burst-settlement normal accounts ──────────────────────────
+    # 25% of hub normals are designated "payment processors" / "trading desks"
+    # that do rapid-fire batch settlements within 1–5 minute windows.
+    # This injects genuine velocity ambiguity into the normal class so that
+    # low avg_velocity is no longer a clean mule discriminator.
+    n_burst_hubs = max(2, int(len(hub_normals) * 0.25))
+    burst_hub_ids = random.sample(hub_normals, min(n_burst_hubs, len(hub_normals)))
+    for burst_id in burst_hub_ids:
+        n_bursts = random.randint(4, 10)   # 4-10 burst events over 30 days
+        for _ in range(n_bursts):
+            burst_start = base_time + timedelta(
+                days=random.randint(0, 29),
+                hours=random.randint(8, 21)
+            )
+            n_rapid = random.randint(3, 8)   # 3-8 rapid txns per burst
+            burst_dsts = random.sample([a for a in all_ids if a != burst_id],
+                                       min(n_rapid, len(all_ids) - 1))
+            for j, dst_id in enumerate(burst_dsts):
+                ts = burst_start + timedelta(
+                    minutes=random.randint(1, 2) * (j + 1)  # 1-2 min gaps → low velocity
+                )
+                transactions.append({
+                    "transaction_id": f"TXN-{uuid.uuid4().hex[:12].upper()}",
+                    "source_id": burst_id,
+                    "target_id": dst_id,
+                    "amount": round(random.uniform(5000, 80000), 2),
+                    "channel_type": random.choice(CHANNELS),
+                    "timestamp": ts.isoformat(),
+                    "geo_location": random.choice(GEO_LOCATIONS),
+                    "is_suspicious": False,   # legit — payment processor behaviour
+                })
 
-    for s_src in structuring_sources:
-        for _ in range(4):  # 4 transfers under $10k
-            amt = round(random.uniform(9400, 9950), 2)
-            ts = base_time + timedelta(days=random.randint(1, 30), minutes=random.randint(0, 120))
-            tx_list.append({
-                "transaction_id": f"TX-{t_cnt:06d}",
-                "source_account": s_src,
-                "target_account": structuring_target,
-                "amount": amt,
-                "channel_type": "UPI",
+
+    # ── Mule ring transactions (~20%) ──────────────────────────────
+    # Reduced from 40% → 20% to narrow the per-account degree ratio
+    n_mule = n - n_normal
+    txns_per_ring = n_mule // max(1, len(rings))
+
+
+    for ring in rings:
+        members = ring["members"]
+        hub = ring["hub_account"]
+
+        for _ in range(txns_per_ring):
+            pattern = random.choice(["chain", "hub_spoke", "circular", "smurfing"])
+
+
+            is_fraud_ring = ring.get("is_fraud", True)
+
+            if pattern == "chain":
+                # Rapid multi-hop chain: A→B→C→D within minutes
+                chain_length = random.randint(3, min(7, len(members)))
+                chain = random.sample(members, chain_length)
+                chain_start = base_time + timedelta(
+                    days=random.randint(0, 29),
+                    hours=random.randint(0, 23),
+                    minutes=random.randint(0, 59)
+                )
+                base_amount = round(random.uniform(10000, 100000), 2)
+                for j in range(len(chain) - 1):
+                    ts = chain_start + timedelta(minutes=random.randint(1, 3) * (j + 1))
+                    transactions.append({
+                        "transaction_id": f"TXN-{uuid.uuid4().hex[:12].upper()}",
+                        "source_id": chain[j],
+                        "target_id": chain[j + 1],
+                        "amount": round(base_amount * random.uniform(0.85, 0.99), 2),
+                        "channel_type": random.choice(CHANNELS),
+                        "timestamp": ts.isoformat(),
+                        "geo_location": random.choice(GEO_LOCATIONS),
+                        "is_suspicious": is_fraud_ring,
+                    })
+
+            elif pattern == "hub_spoke":
+                # Hub receives from outside then distributes
+                outside_src = random.choice(normal_ids) if normal_ids else random.choice(all_ids)
+                ts = base_time + timedelta(
+                    days=random.randint(0, 29),
+                    hours=random.randint(0, 23)
+                )
+                total_amount = round(random.uniform(50000, 200000), 2)
+                transactions.append({
+                    "transaction_id": f"TXN-{uuid.uuid4().hex[:12].upper()}",
+                    "source_id": outside_src,
+                    "target_id": hub,
+                    "amount": total_amount,
+                    "channel_type": "UPI",
+                    "timestamp": ts.isoformat(),
+                    "geo_location": random.choice(GEO_LOCATIONS),
+                    "is_suspicious": is_fraud_ring,
+                })
+                # Hub distributes to ring members
+                num_dists = random.randint(2, min(4, len(members) - 1))
+                targets = [m for m in members if m != hub]
+                for t in random.sample(targets, min(num_dists, len(targets))):
+                    ts_out = ts + timedelta(minutes=random.randint(2, 15))
+                    transactions.append({
+                        "transaction_id": f"TXN-{uuid.uuid4().hex[:12].upper()}",
+                        "source_id": hub,
+                        "target_id": t,
+                        "amount": round(total_amount / num_dists * random.uniform(0.8, 1.1), 2),
+                        "channel_type": random.choice(CHANNELS),
+                        "timestamp": ts_out.isoformat(),
+                        "geo_location": random.choice(GEO_LOCATIONS),
+                        "is_suspicious": is_fraud_ring,
+                    })
+
+            elif pattern == "circular":
+                # Circular flow: A→B→C→A
+                cycle_len = random.randint(3, min(5, len(members)))
+                cycle = random.sample(members, cycle_len)
+                cycle_start = base_time + timedelta(
+                    days=random.randint(0, 29),
+                    hours=random.randint(0, 23)
+                )
+                amount = round(random.uniform(20000, 80000), 2)
+                for j in range(cycle_len):
+                    src = cycle[j]
+                    dst = cycle[(j + 1) % cycle_len]
+                    ts = cycle_start + timedelta(minutes=random.randint(2, 8) * (j + 1))
+                    transactions.append({
+                        "transaction_id": f"TXN-{uuid.uuid4().hex[:12].upper()}",
+                        "source_id": src,
+                        "target_id": dst,
+                        "amount": round(amount * random.uniform(0.9, 1.0), 2),
+                        "channel_type": random.choice(CHANNELS),
+                        "timestamp": ts.isoformat(),
+                        "geo_location": random.choice(GEO_LOCATIONS),
+                        "is_suspicious": is_fraud_ring,
+                    })
+
+            elif pattern == "smurfing":
+                # Many small transactions just under threshold
+                src = random.choice(members)
+                dst = random.choice([m for m in members if m != src])
+                smurf_start = base_time + timedelta(
+                    days=random.randint(0, 29),
+                    hours=random.randint(6, 22)
+                )
+                for s in range(random.randint(5, 12)):
+                    ts = smurf_start + timedelta(minutes=random.randint(1, 5) * (s + 1))
+                    transactions.append({
+                        "transaction_id": f"TXN-{uuid.uuid4().hex[:12].upper()}",
+                        "source_id": src,
+                        "target_id": dst,
+                        "amount": round(random.uniform(500, 9900), 2),  # Under 10k threshold
+                        "channel_type": random.choice(CHANNELS),
+                        "timestamp": ts.isoformat(),
+                        "geo_location": random.choice(GEO_LOCATIONS),
+                        "is_suspicious": is_fraud_ring,
+                    })
+
+    random.shuffle(transactions)
+
+    # ── STEP 3 (enhanced): Dissolve mule ring isolation ────────────
+    # The original 15% bridge rate was insufficient — mule rings still formed
+    # dense isolated cliques that GNN community detection trivially identifies.
+    #
+    # Enhanced strategy:
+    #   A) 50% of normal accounts → 1 transaction to a random mule (normal→mule)
+    #   B) Each mule account → 2–5 transactions to random normals (mule→normal exits)
+    # This forces approximately 40-60% of each mule's neighbors to be normal accounts.
+
+    # A) Normal → Mule bridges (35% of normals)
+    n_bridges = int(len(normal_ids) * 0.35)
+    bridge_ids = random.sample(normal_ids, min(n_bridges, len(normal_ids)))
+    for norm_id in bridge_ids:
+        mule_target = random.choice(mule_ids)
+        ts = base_time + timedelta(
+            days=random.randint(0, 29),
+            hours=random.randint(8, 22),
+            minutes=random.randint(0, 59),
+        )
+        transactions.append({
+            "transaction_id": f"TXN-{uuid.uuid4().hex[:12].upper()}",
+            "source_id": norm_id,
+            "target_id": mule_target,
+            "amount": round(random.uniform(100, 8000), 2),
+            "channel_type": random.choice(CHANNELS),
+            "timestamp": ts.isoformat(),
+            "geo_location": random.choice(GEO_LOCATIONS),
+            "is_suspicious": False,  # labelled normal — creates ambiguity
+        })
+
+    # B) Mule → Normal "exit" bridges: each mule sends money to 4–7 normals
+    for mule_id in mule_ids:
+        n_exits = random.randint(4, 7)
+        exit_targets = random.sample(normal_ids, min(n_exits, len(normal_ids)))
+        for norm_target in exit_targets:
+            ts = base_time + timedelta(
+                days=random.randint(0, 29),
+                hours=random.randint(8, 22),
+                minutes=random.randint(0, 59),
+            )
+            transactions.append({
+                "transaction_id": f"TXN-{uuid.uuid4().hex[:12].upper()}",
+                "source_id": mule_id,
+                "target_id": norm_target,
+                "amount": round(random.uniform(200, 10000), 2),
+                "channel_type": random.choice(CHANNELS),
                 "timestamp": ts.isoformat(),
-                "is_suspicious": True,
-                "pattern_type": "STRUCTURING",
+                "geo_location": random.choice(GEO_LOCATIONS),
+                "is_suspicious": False,  # exit transactions appear normal
             })
-            t_cnt += 1
 
-    # Rapid Cash-Out (Velocity Anomaly)
-    cashout_mules = [r["members"] for r in rings if r["is_fraud"]]
-    if cashout_mules:
-        mule_accs = cashout_mules[0]
-        for m_acc in mule_accs[1:]:
-            # Rapid deposits
-            amt = round(random.uniform(15000, 45000), 2)
-            ts_dep = base_time + timedelta(days=random.randint(1, 40))
-            tx_list.append({
-                "transaction_id": f"TX-{t_cnt:06d}",
-                "source_account": m_acc,
-                "target_account": mule_accs[0],  # Hub account
-                "amount": amt,
-                "channel_type": "MOBILE_APP",
-                "timestamp": ts_dep.isoformat(),
-                "is_suspicious": True,
-                "pattern_type": "RAPID_CASHOUT_DEPOSIT",
+    # C) Cross-ring mule connections: 30% of mules transact with OTHER rings
+    # This prevents the GNN from using "isolated clique" as a perfect mule signal
+    n_cross = int(len(mule_ids) * 0.30)
+    cross_mules = random.sample(mule_ids, min(n_cross, len(mule_ids)))
+    other_mules = [m for m in mule_ids]  # all mules as potential targets
+    for mule_id in cross_mules:
+        # Pick a mule from a DIFFERENT ring
+        cross_target = random.choice([m for m in other_mules if m != mule_id])
+        ts = base_time + timedelta(
+            days=random.randint(0, 29),
+            hours=random.randint(8, 22),
+            minutes=random.randint(0, 59),
+        )
+        transactions.append({
+            "transaction_id": f"TXN-{uuid.uuid4().hex[:12].upper()}",
+            "source_id": mule_id,
+            "target_id": cross_target,
+            "amount": round(random.uniform(5000, 50000), 2),
+            "channel_type": random.choice(CHANNELS),
+            "timestamp": ts.isoformat(),
+            "geo_location": random.choice(GEO_LOCATIONS),
+            "is_suspicious": True,
+        })
+
+    return pd.DataFrame(transactions)
+
+
+# ─── ATM Withdrawal Generation ────────────────────────────────────
+
+def generate_atm_withdrawals(
+    accounts_df: pd.DataFrame,
+    rings: List[Dict]
+) -> pd.DataFrame:
+    """Generate ATM withdrawal records. All ring members have more ATM activity."""
+    withdrawals = []
+    base_time = datetime.now() - timedelta(days=30)
+    
+    # Apply to ALL rings (true and false)
+    ring_member_ids = set()
+    for r in rings:
+        ring_member_ids.update(r["members"])
+
+    for _, acc in accounts_df.iterrows():
+        acc_id = acc["account_id"]
+        # Allow false rings to share the same behavior distribution
+        n_withdrawals = random.randint(1, 7) if acc_id in ring_member_ids else random.randint(0, 3)
+
+        for _ in range(n_withdrawals):
+            ts = base_time + timedelta(
+                days=random.randint(0, 29),
+                hours=random.randint(6, 23),
+                minutes=random.randint(0, 59)
+            )
+            withdrawals.append({
+                "account_id": acc_id,
+                "atm_id": _generate_atm_id(),
+                "amount": round(random.uniform(2000, 25000), 2),
+                "timestamp": ts.isoformat(),
+                "geo_location": random.choice(GEO_LOCATIONS),
             })
-            t_cnt += 1
 
-            # Instant ATM withdrawal (5 mins later)
-            tx_list.append({
-                "transaction_id": f"TX-{t_cnt:06d}",
-                "source_account": mule_accs[0],
-                "target_account": "ATM-CASH-OUT",
-                "amount": amt * 0.95,
-                "channel_type": "ATM",
-                "timestamp": (ts_dep + timedelta(minutes=random.randint(2, 8))).isoformat(),
-                "is_suspicious": True,
-                "pattern_type": "RAPID_CASHOUT_ATM",
+    return pd.DataFrame(withdrawals)
+
+
+# ─── STEP 4: Hard Negative Account Injection ───────────────────────
+
+def inject_hard_negatives(
+    accounts_df: pd.DataFrame,
+    transactions_df: pd.DataFrame,
+    n_hard_negatives: int = 80,  # enough confusion to prevent perfect ranking
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    STEP 4 — Inject 'normal-looking fraud' accounts.
+
+    These are LEGITIMATE accounts that mimic surface-level mule patterns:
+    - Very high transaction volume (like mules)
+    - Multi-channel activity
+    - Not marked as mule (is_mule=False)
+
+    Goal: force the model to learn deeper structural signals.
+    """
+    base_time = datetime.now() - timedelta(days=30)
+    hard_neg_ids = [f"ACC-HN-{i:04d}" for i in range(n_hard_negatives)]
+    hard_neg_rows = []
+    new_txns = []
+
+    for acc_id in hard_neg_ids:
+        jurisdiction = random.choice(["IN", "US", "UK"])  # low-risk jurisdictions
+        hard_neg_rows.append({
+            "account_id": acc_id,
+            "holder_name": fake.name(),
+            "jurisdiction": jurisdiction,
+            "jurisdiction_risk_weight": JURISDICTIONS[jurisdiction],
+            "account_type": "CURRENT",
+            "created_at": fake.date_between(start_date="-3y", end_date="-180d").isoformat(),
+            "is_mule": False,  # Legitimate despite high volume
+        })
+
+        # Generate mule-like high-velocity transactions
+        n_txns = random.randint(20, 40)
+        for _ in range(n_txns):
+            other = random.choice(accounts_df["account_id"].tolist())
+            ts = base_time + timedelta(
+                days=random.randint(0, 29),
+                hours=random.randint(0, 23),
+                minutes=random.randint(0, 59)
+            )
+            new_txns.append({
+                "transaction_id": f"TXN-{uuid.uuid4().hex[:12].upper()}",
+                "source_id": acc_id,
+                "target_id": other,
+                "amount": round(random.uniform(50000, 200000), 2),  # high-value
+                "channel_type": random.choice(CHANNELS),
+                "timestamp": ts.isoformat(),
+                "geo_location": random.choice(GEO_LOCATIONS),
+                "is_suspicious": False,
             })
-            t_cnt += 1
 
-    transactions_df = pd.DataFrame(tx_list)
+    combined_accounts = pd.concat(
+        [accounts_df, pd.DataFrame(hard_neg_rows)], ignore_index=True
+    )
+    combined_txns = pd.concat(
+        [transactions_df, pd.DataFrame(new_txns)], ignore_index=True
+    )
+    print(f"   🧨 Hard negatives: injected {n_hard_negatives} high-volume legit accounts")
+    return combined_accounts, combined_txns
 
-    # Save CSV files to DATA_DIR
-    accounts_df.to_csv(os.path.join(DATA_DIR, "accounts.csv"), index=False)
-    transactions_df.to_csv(os.path.join(DATA_DIR, "transactions.csv"), index=False)
-    devices_df.to_csv(os.path.join(DATA_DIR, "devices.csv"), index=False)
-    ips_df.to_csv(os.path.join(DATA_DIR, "ips.csv"), index=False)
 
-    return {
+# ─── STEP 5: Normal Cliques (Structural Confusion) ──────────────
+
+def inject_normal_cliques(
+    accounts_df: pd.DataFrame,
+    transactions_df: pd.DataFrame,
+    devices_df: pd.DataFrame,
+    ips_df: pd.DataFrame,
+    n_cliques: int = 20,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    STEP 5 — Inject clusters of LEGITIMATE accounts that form dense
+    transaction cliques, mimicking the exact topology of mule rings.
+
+    Each clique: 3-6 accounts, all-pairs transactions, shared devices/IPs.
+    This forces the GNN to learn beyond "dense clique = mule ring" which
+    is the reason AUC sits at 1.0 even with heavy feature noise.
+    """
+    base_time = datetime.now() - timedelta(days=30)
+    new_accounts = []
+    new_txns = []
+    new_devices = []
+    new_ips = []
+
+    for clique_idx in range(n_cliques):
+        clique_size = random.randint(3, 6)
+        clique_ids = [f"ACC-CLQ-{clique_idx:02d}-{j:02d}" for j in range(clique_size)]
+
+        # Shared device and IP within the clique (like mule rings share devices)
+        shared_device = _generate_device_id()
+        shared_ip = _generate_ip()
+
+        for acc_id in clique_ids:
+            jurisdiction = random.choice(["IN", "US", "UK", "AE"])
+            new_accounts.append({
+                "account_id": acc_id,
+                "holder_name": fake.name(),
+                "jurisdiction": jurisdiction,
+                "jurisdiction_risk_weight": JURISDICTIONS[jurisdiction],
+                "account_type": random.choice(["SAVINGS", "CURRENT"]),
+                "created_at": fake.date_between(
+                    start_date="-2y", end_date="-90d"
+                ).isoformat(),
+                "is_mule": False,  # LEGITIMATE — this is the key
+            })
+
+            # Shared device + IP (mimics mule ring device sharing)
+            new_devices.append({
+                "account_id": acc_id,
+                "device_id": shared_device,
+            })
+            new_ips.append({
+                "account_id": acc_id,
+                "ip_address": shared_ip,
+            })
+            # Also give each a personal device
+            new_devices.append({
+                "account_id": acc_id,
+                "device_id": _generate_device_id(),
+            })
+
+        # All-pairs transactions within the clique (dense ring structure)
+        for i, src in enumerate(clique_ids):
+            for j, dst in enumerate(clique_ids):
+                if i != j:
+                    n_txns = random.randint(2, 5)
+                    for _ in range(n_txns):
+                        ts = base_time + timedelta(
+                            days=random.randint(0, 29),
+                            hours=random.randint(0, 23),
+                            minutes=random.randint(0, 59),
+                        )
+                        new_txns.append({
+                            "transaction_id": f"TXN-{uuid.uuid4().hex[:12].upper()}",
+                            "source_id": src,
+                            "target_id": dst,
+                            "amount": round(random.uniform(5000, 100000), 2),
+                            "channel_type": random.choice(CHANNELS),
+                            "timestamp": ts.isoformat(),
+                            "geo_location": random.choice(GEO_LOCATIONS),
+                            "is_suspicious": False,
+                        })
+
+        # Some transactions to/from existing normal accounts (external edges)
+        existing_normals = accounts_df[~accounts_df["is_mule"]]["account_id"].tolist()
+        for acc_id in clique_ids:
+            n_ext = random.randint(2, 4)
+            for _ in range(n_ext):
+                ext_target = random.choice(existing_normals)
+                ts = base_time + timedelta(
+                    days=random.randint(0, 29),
+                    hours=random.randint(0, 23),
+                )
+                new_txns.append({
+                    "transaction_id": f"TXN-{uuid.uuid4().hex[:12].upper()}",
+                    "source_id": acc_id,
+                    "target_id": ext_target,
+                    "amount": round(random.uniform(1000, 50000), 2),
+                    "channel_type": random.choice(CHANNELS),
+                    "timestamp": ts.isoformat(),
+                    "geo_location": random.choice(GEO_LOCATIONS),
+                    "is_suspicious": False,
+                })
+
+    combined_accounts = pd.concat(
+        [accounts_df, pd.DataFrame(new_accounts)], ignore_index=True
+    )
+    combined_txns = pd.concat(
+        [transactions_df, pd.DataFrame(new_txns)], ignore_index=True
+    )
+    combined_devices = pd.concat(
+        [devices_df, pd.DataFrame(new_devices)], ignore_index=True
+    )
+    combined_ips = pd.concat(
+        [ips_df, pd.DataFrame(new_ips)], ignore_index=True
+    )
+
+    n_clique_accounts = sum(1 for _ in new_accounts)
+    print(f"   👥 Normal cliques: {n_cliques} cliques, {n_clique_accounts} accounts, "
+          f"{len(new_txns)} transactions")
+    return combined_accounts, combined_txns, combined_devices, combined_ips
+
+
+# ─── Master Generator ─────────────────────────────────────────────
+
+def generate_all_data(
+    num_accounts: int = NUM_ACCOUNTS,
+    num_transactions: int = NUM_TRANSACTIONS,
+    num_mule_rings: int = NUM_MULE_RINGS,
+    save: bool = True,
+) -> Dict[str, pd.DataFrame]:
+    """Generate all synthetic data and optionally save to disk."""
+
+    print(f"🏗️  Generating {num_accounts} accounts...")
+    accounts_df = generate_accounts(num_accounts)
+
+    print(f"💀 Injecting {num_mule_rings} mule rings...")
+    accounts_df, rings = inject_mule_rings(accounts_df, num_mule_rings)
+    mule_count = accounts_df["is_mule"].sum()
+    print(f"   → {mule_count} mule accounts across {len(rings)} rings")
+
+    print(f"📱 Generating device & IP mappings...")
+    devices_df, ips_df = generate_device_ip_mapping(accounts_df, rings)
+
+    print(f"💰 Generating ~{num_transactions} transactions...")
+    transactions_df = generate_transactions(accounts_df, rings, num_transactions)
+    print(f"   → {len(transactions_df)} total transactions generated (incl. bridges)")
+
+    # STEP 4: Inject hard negatives after transactions are generated
+    print(f"🧨 Injecting hard negative samples...")
+    accounts_df, transactions_df = inject_hard_negatives(accounts_df, transactions_df)
+
+    # STEP 5: Inject normal cliques — dense clusters of legitimate accounts
+    # that mimic mule ring topology to confuse the GNN's structural signal
+    print(f"👥 Injecting normal cliques (structural confusion)...")
+    accounts_df, transactions_df, devices_df, ips_df = inject_normal_cliques(
+        accounts_df, transactions_df, devices_df, ips_df, n_cliques=20
+    )
+
+    # Device/IP mappings for hard negatives (unique per account — they're legit)
+    hn_accounts = accounts_df[accounts_df["account_id"].str.startswith("ACC-HN-")]
+    for _, acc in hn_accounts.iterrows():
+        devices_df = pd.concat([
+            devices_df,
+            pd.DataFrame([{"account_id": acc["account_id"], "device_id": _generate_device_id()}])
+        ], ignore_index=True)
+        ips_df = pd.concat([
+            ips_df,
+            pd.DataFrame([{"account_id": acc["account_id"], "ip_address": _generate_ip()}])
+        ], ignore_index=True)
+
+    print(f"🏧 Generating ATM withdrawals...")
+    atm_df = generate_atm_withdrawals(accounts_df, rings)
+    print(f"   → {len(atm_df)} ATM withdrawals generated")
+
+    data = {
         "accounts": accounts_df,
         "transactions": transactions_df,
         "devices": devices_df,
         "ips": ips_df,
-        "rings": rings
+        "atm_withdrawals": atm_df,
+        "rings": rings,
     }
+
+    if save:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        accounts_df.to_csv(os.path.join(DATA_DIR, "accounts.csv"), index=False)
+        transactions_df.to_csv(os.path.join(DATA_DIR, "transactions.csv"), index=False)
+        devices_df.to_csv(os.path.join(DATA_DIR, "devices.csv"), index=False)
+        ips_df.to_csv(os.path.join(DATA_DIR, "ips.csv"), index=False)
+        atm_df.to_csv(os.path.join(DATA_DIR, "atm_withdrawals.csv"), index=False)
+
+        with open(os.path.join(DATA_DIR, "mule_rings.json"), "w") as f:
+            json.dump(rings, f, indent=2)
+
+        print(f"\n✅ All data saved to {DATA_DIR}")
+
+    return data
+
+
+# ─── CLI Entry Point ──────────────────────────────────────────────
+
+if __name__ == "__main__":
+    generate_all_data()

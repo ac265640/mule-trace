@@ -1,0 +1,13 @@
+/* ChainVigil App.css - Component-level overrides */
+
+@keyframes rocket-fly {
+  0% { transform: translateY(0) rotate(45deg); }
+  50% { transform: translateY(-10px) rotate(45deg); }
+  100% { transform: translateY(0) rotate(45deg); }
+}
+
+.rocket-icon {
+  display: inline-block;
+  animation: rocket-fly 1s ease-in-out infinite;
+  margin-left: 10px;
+}
