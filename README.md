@@ -116,7 +116,7 @@ The agent does **NOT** follow a fixed sequential pipeline. For each user query, 
 | Neural Network | PyTorch Geometric — GraphSAGE + GAT hybrid |
 | XAI | Gradient × Input feature attribution |
 | SAR Reporting | Custom FIU-IND compliant structured report generator |
-| Frontend | React 18 + Vite + Vanilla CSS (glassmorphism dark mode) |
+| Frontend | React 19 + Vite + Vanilla CSS (glassmorphism dark mode) |
 | Graph Visualization | react-force-graph-2d |
 
 ### External Tools & AI Assistance Disclosure
