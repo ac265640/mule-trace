@@ -179,15 +179,57 @@ def _weighted_final_score(
 ) -> float:
     """
     Combine module scores with weights.
-    GNN is the anchor (60%), others are modifiers.
+    GNN is the anchor. If temporal/behavioral/nlp modules produce no signal
+    (score == 0.0 with no detected signals), their weight is redistributed
+    back to GNN so the final score stays consistent with the calibrated GNN score.
     """
-    score = 0.60 * gnn
-
+    # Determine which supplementary modules actually produced a signal
+    temporal_score = 0.0
+    temporal_active = False
     if temporal:
-        score += 0.20 * temporal.get("temporal_risk_score", 0)
-    if behavioral:
-        score += 0.15 * behavioral.get("behavioral_risk_score", 0)
-    if nlp:
-        score += 0.05 * nlp.get("nlp_risk_score", 0)
+        ts = temporal.get("temporal_risk_score", 0.0)
+        has_signals = bool(temporal.get("temporal_signals")) or ts > 0
+        if has_signals:
+            temporal_score = ts
+            temporal_active = True
 
-    return min(1.0, score)
+    behavioral_score = 0.0
+    behavioral_active = False
+    if behavioral:
+        bs = behavioral.get("behavioral_risk_score", 0.0)
+        has_signals = bool(behavioral.get("behavioral_signals")) or bs > 0
+        if has_signals:
+            behavioral_score = bs
+            behavioral_active = True
+
+    nlp_score = 0.0
+    nlp_active = False
+    if nlp:
+        ns = nlp.get("nlp_risk_score", 0.0)
+        if ns > 0:
+            nlp_score = ns
+            nlp_active = True
+
+    # Compute effective weights: redistribute unused module weights to GNN
+    w_gnn = 1.0
+    w_temporal = 0.0
+    w_behavioral = 0.0
+    w_nlp = 0.0
+
+    if temporal_active:
+        w_gnn -= 0.20
+        w_temporal = 0.20
+    if behavioral_active:
+        w_gnn -= 0.15
+        w_behavioral = 0.15
+    if nlp_active:
+        w_gnn -= 0.05
+        w_nlp = 0.05
+
+    score = (
+        w_gnn * gnn
+        + w_temporal * temporal_score
+        + w_behavioral * behavioral_score
+        + w_nlp * nlp_score
+    )
+    return min(1.0, round(score, 4))

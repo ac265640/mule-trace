@@ -29,8 +29,29 @@ class AgentToolRegistry:
         tx_df = self.data["transactions"]
         acc_df = self.data["accounts"]
 
-        channel_breakdown = tx_df["channel_type"].value_counts().to_dict()
-        pattern_breakdown = tx_df["pattern_type"].value_counts().to_dict()
+        channel_breakdown = tx_df["channel_type"].value_counts().to_dict() if "channel_type" in tx_df.columns else {}
+
+        # pattern_type may not exist in current dataset schema — use is_suspicious instead
+        if "pattern_type" in tx_df.columns:
+            pattern_breakdown = tx_df["pattern_type"].value_counts().to_dict()
+        elif "is_suspicious" in tx_df.columns:
+            pattern_breakdown = {
+                "suspicious": int(tx_df["is_suspicious"].sum()),
+                "normal": int((~tx_df["is_suspicious"]).sum()),
+            }
+        else:
+            pattern_breakdown = {}
+
+        # Typology breakdown from mule rings metadata if available
+        mule_prevalence = None
+        if "is_mule" in acc_df.columns:
+            mule_count = int(acc_df["is_mule"].sum())
+            total = len(acc_df)
+            mule_prevalence = {
+                "mule_accounts": mule_count,
+                "total_accounts": total,
+                "prevalence_pct": round(mule_count / total * 100, 2) if total > 0 else 0,
+            }
 
         return {
             "total_customers": len(acc_df),
@@ -39,7 +60,9 @@ class AgentToolRegistry:
             "average_transaction_amount": float(tx_df["amount"].mean()),
             "channel_breakdown": channel_breakdown,
             "pattern_breakdown": pattern_breakdown,
+            "mule_prevalence": mule_prevalence,
         }
+
 
     def run_structuring_tool(self, max_amount: float = 10000.0) -> List[Dict[str, Any]]:
         """Run structuring detection on sub-$10k transfers."""
@@ -107,7 +130,8 @@ class AgentToolRegistry:
 
         return {
             "account_id": account_id,
-            "risk_score": prob,
+            "mule_probability": prob,   # key matches orchestrator + predict_scores schema
+            "risk_score": prob,         # keep for any other callers
             "risk_tier": tier,
             "recommended_action": action,
             "explanation": f"Single entity audit for {account_id}: Risk tier classified as {tier}."

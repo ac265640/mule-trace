@@ -200,7 +200,8 @@ class BehavioralProfiler:
                 etype = data.get("edge_type", "")
                 if etype == "USED_DEVICE":
                     device_count += 1
-                elif etype == "ACCESSED_FROM_IP":
+                elif etype in ("LOGGED_FROM", "ACCESSED_FROM_IP"):
+                    # builder creates LOGGED_FROM; keep ACCESSED_FROM_IP as fallback
                     ip_count += 1
 
         total = device_count + ip_count

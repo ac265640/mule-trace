@@ -81,6 +81,19 @@ state = {
     "explanations": {},
     "init_status": "not_started",  # not_started | running | complete | failed
     "init_error": None,
+    # ── Pipeline Progress Tracking (Step 3) ──────────────────────────
+    "pipeline_job": {
+        "status": "idle",          # idle | running | complete | failed
+        "current_step": None,      # Name of the current step
+        "step_index": 0,           # 0-4
+        "total_steps": 4,
+        "progress_pct": 0,
+        "steps_done": [],          # list of {name, duration_s}
+        "error": None,
+        "started_at": None,
+        "completed_at": None,
+        "last_result": None,
+    },
 }
 
 # ─── Static Files (React Frontend) ─────────────────────────────
@@ -426,6 +439,21 @@ async def explain_account(account_id: str):
             state["node_mapping"],
         )
         explanation = explainer.explain_account(account_id)
+
+        # ── Override confidence_score with calibrated rank-based score ──
+        # Raw sigmoid from the model is uncalibrated (typically 0.02–0.58 under
+        # class imbalance). The Account Risk tab shows the rank-calibrated
+        # mule_probability from predict_scores(). Unify them here so XAI
+        # always shows the same score as Account Risk.
+        if state["risk_scores"]:
+            calibrated = next(
+                (r["mule_probability"] for r in state["risk_scores"]
+                 if r.get("account_id") == account_id),
+                None,
+            )
+            if calibrated is not None:
+                explanation["confidence_score"] = round(calibrated, 4)
+
         state["explanations"][account_id] = explanation
         return explanation
     except Exception as e:
@@ -646,60 +674,189 @@ def _bucket_amount(amount: float) -> str:
 
 # ─── Pipeline Shortcut ────────────────────────────────────────
 
-@app.post("/api/pipeline/run", response_model=PipelineStatus)
-async def run_full_pipeline():
-    """Run the entire pipeline: Generate → Ingest → Train → Analyze."""
-    try:
-        # Step 1: Generate
-        data = generate_all_data()
+import time as _time
 
-        # Step 2: Build graph
+async def _run_pipeline_background():
+    """
+    Background task: Generate → Ingest → Train → Analyze.
+    Updates state['pipeline_job'] with live progress so the frontend
+    can poll /api/pipeline/status without blocking.
+    """
+    job = state["pipeline_job"]
+    job["status"] = "running"
+    job["started_at"] = _time.time()
+    job["steps_done"] = []
+    job["error"] = None
+    job["progress_pct"] = 0
+    
+    _STEPS = [
+        "Generating synthetic data",
+        "Building Unified Entity Graph",
+        "Training GNN model",
+        "Running risk analysis",
+    ]
+    job["total_steps"] = len(_STEPS)
+
+    def _step_start(name: str, idx: int):
+        job["current_step"] = name
+        job["step_index"] = idx
+        job["progress_pct"] = int((idx / len(_STEPS)) * 100)
+        print(f"   Pipeline [{idx+1}/{len(_STEPS)}]: {name}")
+        return _time.time()
+
+    def _step_done(name: str, t0: float):
+        dur = round(_time.time() - t0, 1)
+        job["steps_done"].append({"name": name, "duration_s": dur})
+        print(f"   {name} — {dur}s")
+
+    try:
+        # ── Step 1: Generate ───────────────────────────────────────
+        t0 = _step_start(_STEPS[0], 0)
+        data = await asyncio.get_event_loop().run_in_executor(None, generate_all_data)
+        mule_count = data["accounts"]["is_mule"].sum()
+        _step_done(_STEPS[0], t0)
+
+        # ── Step 2: Build graph ────────────────────────────────────
+        t0 = _step_start(_STEPS[1], 1)
         builder = GraphBuilder(state["neo4j_client"])
-        G = builder.build(data)
+        G = await asyncio.get_event_loop().run_in_executor(None, builder.build, data)
         state["graph_builder"] = builder
         state["nx_graph"] = G
+        _step_done(_STEPS[1], t0)
 
-        # Step 3: Convert & Train
+        # ── Step 3: Convert & Train ────────────────────────────────
+        t0 = _step_start(_STEPS[2], 2)
         from backend.gnn.dataset import nx_to_pyg
         from backend.gnn.train import Trainer
 
-        pyg_data, node_mapping, account_ids = nx_to_pyg(G)
+        def _train():
+            pyg_data, node_mapping, account_ids = nx_to_pyg(G)
+            trainer = Trainer(pyg_data)
+            results = trainer.train()
+            return pyg_data, node_mapping, account_ids, trainer, results
+
+        pyg_data, node_mapping, account_ids, trainer, results = (
+            await asyncio.get_event_loop().run_in_executor(None, _train)
+        )
         state["pyg_data"] = pyg_data
         state["node_mapping"] = node_mapping
         state["account_ids"] = account_ids
-
-        trainer = Trainer(pyg_data)
-        results = trainer.train()
         state["trainer"] = trainer
+        _step_done(_STEPS[2], t0)
 
-        # Step 4: Risk Analysis
+        # ── Step 4: Risk Analysis ──────────────────────────────────
+        t0 = _step_start(_STEPS[3], 3)
         from backend.gnn.predict import predict_scores
         from backend.risk.engine import RiskIntelligenceEngine
 
-        risk_scores = predict_scores(trainer.model, pyg_data, account_ids)
-        state["risk_scores"] = risk_scores
+        def _analyze():
+            risk_scores = predict_scores(trainer.model, pyg_data, account_ids)
+            engine = RiskIntelligenceEngine(G, risk_scores)
+            summary = engine.analyze()
+            return risk_scores, summary
 
-        engine = RiskIntelligenceEngine(G, risk_scores)
-        summary = engine.analyze()
+        risk_scores, summary = await asyncio.get_event_loop().run_in_executor(None, _analyze)
+        state["risk_scores"] = risk_scores
         state["risk_summary"] = summary
 
-        return PipelineStatus(
-            stage="Full Pipeline",
-            status="complete",
-            message=f"Pipeline complete. AUC: {results['best_val_auc']:.4f}, "
-                    f"Flagged: {summary['flagged_accounts']}, "
-                    f"Clusters: {summary['clusters_detected']}",
-            details={
-                "training": results,
-                "risk": {
-                    "flagged": summary["flagged_accounts"],
-                    "clusters": summary["clusters_detected"],
-                    "distribution": summary["risk_distribution"],
-                },
-            },
-        )
+        # Update observability gauges
+        total = summary["total_accounts_analyzed"]
+        flagged = summary["flagged_accounts"]
+        METRICS.set_gauge("accounts_analyzed", total)
+        METRICS.set_gauge("flagged_accounts", flagged)
+        METRICS.set_gauge("clusters_detected", summary["clusters_detected"])
+        METRICS.set_gauge("fraud_rate", round(flagged / total, 4) if total else 0)
+        METRICS.set_gauge("model_auc", results.get("test_auc", 0))
+        _step_done(_STEPS[3], t0)
+
+        # ── Done ───────────────────────────────────────────────────
+        total_duration = round(_time.time() - job["started_at"], 1)
+        job["status"] = "complete"
+        job["current_step"] = "Done"
+        job["progress_pct"] = 100
+        job["completed_at"] = _time.time()
+        job["last_result"] = {
+            "test_auc": results.get("test_auc", 0),
+            "test_average_precision": results.get("test_average_precision", 0),
+            "overfitting_warning": results.get("overfitting_warning", False),
+            "epochs_trained": results.get("epochs_trained", 0),
+            "stopped_early": results.get("stopped_early", False),
+            "flagged": summary["flagged_accounts"],
+            "clusters": summary["clusters_detected"],
+            "mule_accounts": int(mule_count),
+            "total_duration_s": total_duration,
+        }
+        print(f"\nPipeline complete in {total_duration}s")
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        job["status"] = "failed"
+        job["error"] = str(e)
+        job["completed_at"] = _time.time()
+        print(f"Pipeline failed: {e}")
+        traceback.print_exc()
+
+
+@app.post("/api/pipeline/run")
+async def run_full_pipeline(background_tasks=None):
+    """
+    Start the full pipeline as a non-blocking background task.
+    Returns immediately with job status. Poll /api/pipeline/status for progress.
+    """
+    job = state["pipeline_job"]
+    if job["status"] == "running":
+        return {
+            "status": "already_running",
+            "message": f"Pipeline is already running: {job['current_step']}",
+            "progress_pct": job["progress_pct"],
+        }
+
+    # Reset job state
+    job["status"] = "running"
+    job["steps_done"] = []
+    job["error"] = None
+    job["progress_pct"] = 0
+    job["current_step"] = "Starting..."
+    job["last_result"] = None
+
+    asyncio.create_task(_run_pipeline_background())
+
+    return {
+        "status": "started",
+        "message": "Pipeline started in background. Poll /api/pipeline/status for progress.",
+        "progress_pct": 0,
+    }
+
+
+@app.get("/api/pipeline/status")
+async def pipeline_status():
+    """
+    Poll endpoint for live pipeline progress.
+    Returns current step, progress %, step timing, and final results when done.
+    """
+    job = state["pipeline_job"]
+    return {
+        "status": job["status"],
+        "current_step": job["current_step"],
+        "step_index": job["step_index"],
+        "total_steps": job["total_steps"],
+        "progress_pct": job["progress_pct"],
+        "steps_done": job["steps_done"],
+        "error": job["error"],
+        "last_result": job.get("last_result"),
+    }
+
+
+@app.post("/api/pipeline/cancel")
+async def cancel_pipeline():
+    """Mark the pipeline as cancelled (best-effort — in-flight step may complete)."""
+    job = state["pipeline_job"]
+    if job["status"] == "running":
+        job["status"] = "cancelled"
+        job["error"] = "Cancelled by user"
+        return {"status": "cancelled", "message": "Pipeline cancellation requested."}
+    return {"status": job["status"], "message": "No active pipeline to cancel."}
+
 
 
 # ─── Financial Crime Pattern Detection ─────────────────────────
@@ -1043,6 +1200,7 @@ async def agent_query(payload: dict):
     from backend.agent.tools import AgentToolRegistry
 
     query = payload.get("query", "").strip()
+    strategy = payload.get("strategy")
     if not query:
         raise HTTPException(status_code=400, detail="Query string is required.")
 
@@ -1067,7 +1225,7 @@ async def agent_query(payload: dict):
     )
 
     METRICS.inc("agent_queries")
-    result = orchestrator.process_query(query)
+    result = orchestrator.process_query(query, strategy=strategy)
     return result
 
 
