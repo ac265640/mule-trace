@@ -1,6 +1,6 @@
 # MuleTrace — Autonomous Agentic AML & Cross-Channel Fraud Intelligence System
 
-> **Hackathon Problem Statement 1:** AI-Powered Suspicious Activity Detection
+>
 
 MuleTrace is an intelligent, **query-driven autonomous agent** designed to detect complex money laundering (AML) patterns and mule networks across multi-channel banking transaction data. Combining dynamic NLP intent parsing, selective tool orchestration, PyTorch Geometric Graph Neural Networks (GraphSAGE + GAT), and Gradient×Input feature attribution (XAI), MuleTrace delivers full explainability and automated Suspicious Activity Report (SAR) generation within a modern analyst workbench UI.
 
