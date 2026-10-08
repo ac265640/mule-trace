@@ -37,8 +37,7 @@ class AgentPlanner:
                 else:
                     digits = re.search(r"\d+", acc_match.group(0)).group(0)
                     target_entity = f"ACC-{int(digits):05d}"
-            else:
-                target_entity = "ACC-00001"
+            # No account id given: leave target_entity empty so the agent declines instead of guessing.
         else:
             # Automatic NLP Intent Resolution
             acc_match = re.search(r"acc-\d{5}|customer\s*(id\s*)?(\d{4,5})", query_lower)
@@ -96,6 +95,11 @@ class AgentPlanner:
                 {"step": 1, "tool": "Entity_Lookup_Tool", "reason": f"Perform direct single-entity lookup for {target_entity}"},
                 {"step": 2, "tool": "Graph_Neighbor_Tool", "reason": "Retrieve connected devices, IPs, and transfer history"},
                 {"step": 3, "tool": "Explanation_Tool", "reason": "Compute on-demand XAI attribution and risk score"}
+            ]
+        elif intent == "RAPID_CASHOUT_VELOCITY":
+            return [
+                {"step": 1, "tool": "Rapid_Cashout_Tool", "reason": "Pair inbound transfers with ATM withdrawals from the same account within 60 minutes"},
+                {"step": 2, "tool": "Explanation_Tool", "reason": "Cite the fastest inbound-to-cash-out sequences as evidence"}
             ]
         elif intent == "BROAD_EDA_EXPLORATION":
             return [

@@ -8,6 +8,7 @@ Modular tools invoked dynamically by the Agent Orchestrator:
   - Risk_Classification_Tool
   - Explanation_Tool
   - Escalation_Tool
+  - Rapid_Cashout_Tool
 """
 
 import pandas as pd
@@ -116,17 +117,19 @@ class AgentToolRegistry:
         return results
 
     def run_single_entity_lookup(self, account_id: str) -> Dict[str, Any]:
-        """Perform single entity lookup for specific customer ID."""
-        matched_risk = next((r for r in self.risk_scores if r.get("account_id") == account_id), None)
+        """Perform single entity lookup for specific customer ID.
 
-        if matched_risk:
-            prob = matched_risk.get("mule_probability", 0.5)
-            tier = matched_risk.get("risk_tier") or matched_risk.get("risk_level") or ("HIGH" if prob >= 0.7 else "MEDIUM" if prob >= 0.4 else "LOW")
-            action = matched_risk.get("recommended_action") or matched_risk.get("action") or "MONITOR"
-        else:
-            prob = 0.15
-            tier = "LOW"
-            action = "MONITOR"
+        Returns None when the account has no model score; the caller must
+        decline rather than fabricate a risk profile.
+        """
+        matched_risk = next((r for r in self.risk_scores if r.get("account_id") == account_id), None)
+        if not matched_risk:
+            return None
+
+        prob = matched_risk.get("mule_probability", 0.5)
+        tier = matched_risk.get("risk_tier") or matched_risk.get("risk_level") or ("HIGH" if prob >= 0.7 else "MEDIUM" if prob >= 0.4 else "LOW")
+        action = matched_risk.get("recommended_action") or matched_risk.get("action") or "MONITOR"
+        degree = int(self.G.degree(account_id)) if self.G is not None and account_id in self.G else None
 
         return {
             "account_id": account_id,
@@ -134,6 +137,49 @@ class AgentToolRegistry:
             "risk_score": prob,         # keep for any other callers
             "risk_tier": tier,
             "recommended_action": action,
+            "graph_degree": degree,
             "explanation": f"Single entity audit for {account_id}: Risk tier classified as {tier}."
         }
 
+    def run_rapid_cashout_tool(self, window_minutes: int = 60, min_ratio: float = 0.5) -> List[Dict[str, Any]]:
+        """Find inbound transfers followed by an ATM withdrawal from the same
+        account within the window, for at least min_ratio of the inbound amount."""
+        if not self.data or "transactions" not in self.data:
+            return []
+
+        tx_df = self.data["transactions"]
+        src_col = "source_id" if "source_id" in tx_df.columns else "source_account"
+        tgt_col = "target_id" if "target_id" in tx_df.columns else "target_account"
+        ts = pd.to_datetime(tx_df["timestamp"], format="ISO8601")
+
+        inbound = pd.DataFrame({
+            "account_id": tx_df[tgt_col], "in_tx": tx_df["transaction_id"],
+            "in_amount": tx_df["amount"], "in_time": ts, "in_channel": tx_df["channel_type"],
+        })
+        atm = tx_df["channel_type"] == "ATM"
+        outbound = pd.DataFrame({
+            "account_id": tx_df.loc[atm, src_col], "out_tx": tx_df.loc[atm, "transaction_id"],
+            "out_amount": tx_df.loc[atm, "amount"], "out_time": ts[atm],
+        })
+
+        pairs = inbound.merge(outbound, on="account_id")
+        pairs["minutes"] = (pairs["out_time"] - pairs["in_time"]).dt.total_seconds() / 60
+        pairs = pairs[
+            (pairs["minutes"] > 0)
+            & (pairs["minutes"] <= window_minutes)
+            & (pairs["out_amount"] >= min_ratio * pairs["in_amount"])
+        ].sort_values("minutes")
+
+        return [
+            {
+                "account_id": str(r.account_id),
+                "inbound_transaction_id": str(r.in_tx),
+                "inbound_amount": float(r.in_amount),
+                "inbound_channel": str(r.in_channel),
+                "atm_transaction_id": str(r.out_tx),
+                "atm_amount": float(r.out_amount),
+                "minutes_to_cashout": round(float(r.minutes), 1),
+                "pattern": "RAPID_CASHOUT",
+            }
+            for r in pairs.itertuples()
+        ]

@@ -29,14 +29,95 @@ const getRiskLevel = (score) => {
   return 'low'
 }
 
+// ─── Agent guardrail UI: refusals and inline citations ───────────────────────
+const REFUSAL_META = {
+  OUT_OF_SCOPE: { icon: 'block', title: 'Outside my scope' },
+  PROHIBITED_REQUEST: { icon: 'gpp_bad', title: 'Request declined', severe: true },
+  PROMPT_INJECTION: { icon: 'shield', title: "Guardrails can't be overridden", severe: true },
+  PII_REQUEST: { icon: 'lock', title: 'Customer identity data is protected' },
+  NO_DATA: { icon: 'database', title: 'No data loaded' },
+  MODEL_NOT_READY: { icon: 'model_training', title: 'Model not trained yet' },
+  MISSING_ENTITY: { icon: 'person_search', title: 'Which account?' },
+  ENTITY_NOT_FOUND: { icon: 'person_off', title: 'Account not found' },
+  INSUFFICIENT_EVIDENCE: { icon: 'help', title: 'Not enough evidence' },
+  LOW_CONFIDENCE: { icon: 'help', title: 'Too uncertain to answer' },
+  CITATION_ENFORCEMENT_FAILED: { icon: 'fact_check', title: "Answer withheld: claims couldn't be verified", severe: true },
+}
+
+function RefusalCard({ refusal, onPick }) {
+  const meta = REFUSAL_META[refusal.category] || { icon: 'block', title: 'Unable to answer' }
+  const tone = meta.severe
+    ? 'bg-rose-50 border-rose-200 text-rose-900'
+    : 'bg-amber-50 border-amber-200 text-amber-900'
+  return (
+    <div className={`border rounded-3xl p-6 sm:p-7 space-y-4 ${tone}`}>
+      <div className="flex items-start gap-3">
+        <span className="material-symbols-outlined text-2xl">{meta.icon}</span>
+        <div className="space-y-1">
+          <h2 className="font-bold text-base">{meta.title}</h2>
+          <p className="text-sm leading-relaxed">{refusal.reason}</p>
+          {refusal.next_step && <p className="text-sm font-semibold">{refusal.next_step}</p>}
+        </div>
+      </div>
+      {refusal.details?.length > 0 && (
+        <ul className="text-xs font-mono space-y-1 pl-9 opacity-80">
+          {refusal.details.map((d, i) => <li key={i}>• {d}</li>)}
+        </ul>
+      )}
+      {refusal.suggestions?.length > 0 && (
+        <div className="pl-9 space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-wider opacity-70">Try instead</p>
+          <div className="flex flex-wrap gap-2">
+            {refusal.suggestions.map(q => (
+              <button key={q} onClick={() => onPick(q)}
+                className="text-xs px-3 py-1.5 rounded-full bg-white/80 hover:bg-white border border-current/20 cursor-pointer transition-colors">
+                {q}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      <p className="text-[11px] pl-9 opacity-60">Refusal category: {refusal.category}</p>
+    </div>
+  )
+}
+
+function CitedText({ text, activeCite, onCite }) {
+  return text.split(/(\[E\d+\])/g).map((part, i) => {
+    const m = part.match(/^\[(E\d+)\]$/)
+    if (!m) return <span key={i}>{part}</span>
+    const id = m[1]
+    return (
+      <button key={i} onClick={() => onCite(id)} title={`Show evidence ${id}`}
+        className={`inline-flex items-center justify-center min-w-[1.4rem] h-5 px-1 mx-0.5 align-text-top rounded-md text-[11px] font-bold font-mono cursor-pointer transition-colors ${activeCite === id
+          ? 'bg-emerald-600 text-white'
+          : 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100'}`}>
+        {id}
+      </button>
+    )
+  })
+}
+
+const formatEvidenceValue = (v) => {
+  if (typeof v === 'number') return v.toLocaleString(undefined, { maximumFractionDigits: 4 })
+  if (v === null || v === undefined) return '—'
+  return String(v)
+}
+
 // ─── 🤖 Agent Workbench Panel (Smooth Claude Light Theme) ─────────────────────
-function AgentWorkbenchPanel() {
+function AgentWorkbenchPanel({ onOpenTab, onExplain }) {
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
   const [selectedModel, setSelectedModel] = useState('MuleTrace Hybrid GNN v1.1')
   const [showTrace, setShowTrace] = useState(false)
+  const [activeCite, setActiveCite] = useState(null)
+
+  const showEvidence = (id) => {
+    setActiveCite(id)
+    document.getElementById(`evidence-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }
 
   const PRESET_SUGGESTIONS = [
     {
@@ -75,7 +156,7 @@ function AgentWorkbenchPanel() {
   const runQuery = async (q) => {
     const text = q || query
     if (!text.trim()) return
-    setLoading(true); setError(null); setResult(null); setShowTrace(false)
+    setLoading(true); setError(null); setResult(null); setShowTrace(false); setActiveCite(null)
     try {
       const res = await fetch(`${API_BASE}/api/agent/query`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -230,7 +311,9 @@ function AgentWorkbenchPanel() {
       {/* ── Smooth Conversational Agent Response ── */}
       {result && (
         <div className="space-y-5 animate-fade-in">
-          {/* Main Conversational Box */}
+          {result.status === 'refused' ? (
+            <RefusalCard refusal={result.refusal} onPick={q => { setQuery(q); runQuery(q) }} />
+          ) : (
           <div className="bg-white border border-slate-200/90 shadow-sm rounded-3xl p-6 sm:p-7 space-y-5">
             {/* Header */}
             <div className="flex items-center justify-between pb-4 border-b border-slate-100">
@@ -240,7 +323,7 @@ function AgentWorkbenchPanel() {
                 </div>
                 <div>
                   <h2 className="font-bold text-slate-900 text-base">MuleTrace AI Agent</h2>
-                  <p className="text-xs text-slate-500">Intent: <strong className="text-slate-700">{result.intent}</strong> · Confidence: <strong className="text-slate-700">{result.tool_results?.confidence || 'High (90%)'}</strong></p>
+                  <p className="text-xs text-slate-500">Intent: <strong className="text-slate-700">{result.intent}</strong> · Confidence: <strong className="text-slate-700">{result.answer?.confidence_label}</strong></p>
                 </div>
               </div>
               <span className="text-xs font-mono text-slate-500 bg-slate-100 px-3 py-1 rounded-full border border-slate-200/60 flex items-center gap-1">
@@ -249,9 +332,20 @@ function AgentWorkbenchPanel() {
               </span>
             </div>
 
-            {/* Narrative Explanation Text */}
+            {/* Citation verification badge */}
+            {result.guardrails?.citation_enforcement && (
+              <div className="flex items-center gap-2 text-xs font-semibold text-emerald-700">
+                <span className="material-symbols-outlined text-base">verified</span>
+                <span>
+                  {result.guardrails.citation_enforcement.valid_citation_count}/{result.guardrails.citation_enforcement.total_citation_count} citations verified
+                  · {result.guardrails.citation_enforcement.claims_checked} numeric claims checked against evidence
+                </span>
+              </div>
+            )}
+
+            {/* Narrative with inline citations */}
             <div className="text-slate-700 text-base leading-relaxed font-sans">
-              {result.tool_results?.narrative_summary || result.tool_results?.summary || 'Analysis complete.'}
+              <CitedText text={result.answer?.text || ''} activeCite={activeCite} onCite={showEvidence} />
             </div>
 
             {/* Recommended Action Box */}
@@ -262,32 +356,71 @@ function AgentWorkbenchPanel() {
               </div>
             )}
 
-            {/* Collapsible Reasoning & Execution Trace Accordion */}
-            <div className="pt-2 border-t border-slate-100">
-              <button
-                onClick={() => setShowTrace(!showTrace)}
-                className="w-full flex items-center justify-between text-xs font-semibold text-slate-500 hover:text-slate-800 py-2 cursor-pointer transition-colors"
-              >
-                <span className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-sm">tune</span>
-                  Agent Reasoning & Execution Steps ({result.execution_plan?.length || 0})
-                </span>
-                <span className="material-symbols-outlined text-sm">
-                  {showTrace ? 'expand_less' : 'expand_more'}
-                </span>
-              </button>
-
-              {showTrace && (
-                <div className="mt-3 space-y-2 text-xs">
-                  {result.execution_logs?.map((log, i) => (
-                    <div key={i} className="flex items-center gap-2.5 p-3 rounded-xl bg-slate-50 border border-slate-100 text-slate-600 font-mono">
-                      <span className="text-emerald-600 font-bold">Step {i + 1}:</span>
-                      <span>{log}</span>
+            {/* Sources */}
+            {result.evidence?.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Sources ({result.evidence.length})</p>
+                <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+                  {result.evidence.map(ev => (
+                    <div key={ev.id} id={`evidence-${ev.id}`} onClick={() => setActiveCite(ev.id)}
+                      className={`p-3 rounded-xl border text-xs cursor-pointer transition-colors ${activeCite === ev.id
+                        ? 'bg-emerald-50 border-emerald-300'
+                        : 'bg-slate-50/80 border-slate-100 hover:border-slate-200'}`}>
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono font-bold text-emerald-700">{ev.id}</span>
+                        <span className="font-semibold text-slate-800">{ev.label}</span>
+                        <span className="ml-auto text-slate-400">{ev.kind} · {ev.source}</span>
+                      </div>
+                      <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 font-mono text-slate-500">
+                        {Object.entries(ev.data).map(([k, v]) => (
+                          <span key={k}>{k}: <span className="text-slate-700">{formatEvidenceValue(v)}</span></span>
+                        ))}
+                      </div>
                     </div>
                   ))}
                 </div>
-              )}
-            </div>
+              </div>
+            )}
+
+            {result.answer?.disclaimer && (
+              <p className="text-[11px] text-slate-400 italic">{result.answer.disclaimer}</p>
+            )}
+          </div>
+          )}
+
+          {/* Collapsible Reasoning, Guardrails & Execution Trace */}
+          <div className="bg-white border border-slate-200/90 rounded-3xl px-6 py-3 shadow-sm">
+            <button
+              onClick={() => setShowTrace(!showTrace)}
+              className="w-full flex items-center justify-between text-xs font-semibold text-slate-500 hover:text-slate-800 py-2 cursor-pointer transition-colors"
+            >
+              <span className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-sm">tune</span>
+                Agent Reasoning, Guardrails & Execution Steps ({result.execution_logs?.length || 0})
+              </span>
+              <span className="material-symbols-outlined text-sm">
+                {showTrace ? 'expand_less' : 'expand_more'}
+              </span>
+            </button>
+
+            {showTrace && (
+              <div className="mt-3 mb-2 space-y-2 text-xs">
+                {result.guardrails?.input?.checks?.map((c, i) => (
+                  <div key={`g${i}`} className="flex items-center gap-2.5 p-2.5 rounded-xl bg-slate-50 border border-slate-100 font-mono text-slate-600">
+                    <span className={`material-symbols-outlined text-sm ${c.passed ? 'text-emerald-600' : 'text-rose-600'}`}>
+                      {c.passed ? 'check_circle' : 'cancel'}
+                    </span>
+                    <span>Input guard: {c.guard}{c.matched ? ` (matched "${c.matched}")` : ''}</span>
+                  </div>
+                ))}
+                {result.execution_logs?.map((log, i) => (
+                  <div key={i} className="flex items-center gap-2.5 p-3 rounded-xl bg-slate-50 border border-slate-100 text-slate-600 font-mono">
+                    <span className="text-emerald-600 font-bold">Step {i + 1}:</span>
+                    <span>{log}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Structuring Results Card */}
@@ -311,6 +444,29 @@ function AgentWorkbenchPanel() {
                       <div className="text-xs text-slate-500 mt-0.5">{tx.channel || tx.channel_type} · {tx.note || 'Sub-threshold deposit'}</div>
                     </div>
                     <span className="font-bold font-mono text-amber-600 text-base">${tx.amount?.toLocaleString()}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Rapid Cash-Out Card */}
+          {result.tool_results?.rapid_cashout_sequences?.length > 0 && (
+            <div className="bg-white border border-slate-200/90 rounded-3xl p-6 shadow-sm space-y-4">
+              <h3 className="font-semibold text-base text-slate-900 flex items-center gap-2">
+                <span className="material-symbols-outlined text-rose-500">local_atm</span>
+                Rapid Cash-Out Sequences ({result.tool_results.rapid_cashout_sequences.length})
+              </h3>
+              <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
+                {result.tool_results.rapid_cashout_sequences.slice(0, 10).map((p, i) => (
+                  <div key={i} className="flex items-center justify-between p-3.5 rounded-2xl bg-slate-50/80 text-sm border border-slate-100">
+                    <div>
+                      <span className="font-mono text-xs font-bold text-slate-800">{p.account_id}</span>
+                      <div className="text-xs text-slate-500 mt-0.5">
+                        In ${p.inbound_amount.toLocaleString()} via {p.inbound_channel} → ATM ${p.atm_amount.toLocaleString()}
+                      </div>
+                    </div>
+                    <span className="font-bold font-mono text-rose-600 text-sm">{p.minutes_to_cashout} min</span>
                   </div>
                 ))}
               </div>
@@ -364,11 +520,7 @@ function AgentWorkbenchPanel() {
               {/* Functional Action Buttons */}
               <div className="flex flex-wrap gap-3 pt-2">
                 <button
-                  onClick={() => {
-                    const accId = result.tool_results.single_entity.account_id
-                    addLog(`Initializing FinCEN SAR Filing for ${accId}...`, 'info')
-                    setActiveTab('sanctions')
-                  }}
+                  onClick={() => onOpenTab('sar')}
                   className="flex-1 py-3 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs transition-colors shadow-sm cursor-pointer flex items-center justify-center gap-2"
                 >
                   <span className="material-symbols-outlined text-sm">description</span>
@@ -376,10 +528,8 @@ function AgentWorkbenchPanel() {
                 </button>
                 <button
                   onClick={() => {
-                    const accId = result.tool_results.single_entity.account_id
-                    addLog(`Escalated ${accId} to Senior AML Officer for full XAI attribution.`, 'warning')
-                    fetchExplanation(accId)
-                    setActiveTab('xai')
+                    onExplain(result.tool_results.single_entity.account_id)
+                    onOpenTab('xai')
                   }}
                   className="flex-1 py-3 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs transition-colors shadow-sm cursor-pointer flex items-center justify-center gap-2"
                 >
@@ -1200,7 +1350,7 @@ function App() {
         <div className="relative z-10">
           {/* ─── 🤖 Agent Workbench Tab ─────────────────────────────────── */}
           {activeTab === 'agent' && (
-            <AgentWorkbenchPanel />
+            <AgentWorkbenchPanel onOpenTab={setActiveTab} onExplain={fetchExplanation} />
           )}
 
           {activeTab === 'pipeline' && (

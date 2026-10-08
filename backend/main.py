@@ -43,7 +43,7 @@ async def lifespan_context(app: FastAPI):
     """Startup must be INSTANT so Render can detect the port immediately.
     Neo4j and pipeline are lazy-initialized on first API call.
     """
-    print("✅ ChainVigil API started. Visit /docs or use the UI to run the pipeline.")
+    print("✅ MuleTrace API started. Visit /docs or use the UI to run the pipeline.")
     yield
     """Clean up resources."""
     if state["neo4j_client"]:

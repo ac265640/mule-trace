@@ -1,5 +1,5 @@
 """
-ChainVigil — FIU-IND Regulator-Ready SAR Report Generator
+MuleTrace — FIU-IND Regulator-Ready SAR Report Generator
 
 Produces Suspicious Activity Reports (SAR) in a format aligned with:
 - FIU-IND (Financial Intelligence Unit — India) reporting guidelines
@@ -15,7 +15,7 @@ from typing import Dict, List, Optional
 from datetime import datetime
 
 # Reporting entity defaults (override via env in production)
-REPORTING_ENTITY = "ChainVigil Fraud Intelligence Platform"
+REPORTING_ENTITY = "MuleTrace Fraud Intelligence Platform"
 REPORTING_BANK = "Participating Member Bank"
 
 
@@ -29,7 +29,7 @@ def _confidence_label(score: float) -> str:
 def _generate_sar_reference() -> str:
     """Generate a unique SAR reference number."""
     ts = datetime.now().strftime("%Y%m%d%H%M%S")
-    return f"SAR-CHAINVIGIL-{ts}"
+    return f"SAR-MULETRACE-{ts}"
 
 
 def generate_sar_report(
@@ -239,7 +239,7 @@ def generate_sar_report(
         "sanctions_screening": sanctions_section,
         "recommended_actions": actions_section,
         "report_metadata": {
-            "generated_by": "ChainVigil v1.0 — GNN-Based Fraud Intelligence",
+            "generated_by": "MuleTrace v1.0 — GNN-Based Fraud Intelligence",
             "model_architecture": "GraphSAGE + Graph Attention Network (GAT)",
             "xai_method": "Gradient × Input Feature Attribution",
             "privacy_method": "SHA-256 Account Anonymization",
@@ -273,3 +273,41 @@ def _get_filing_type(confidence: float, sanctions: bool, patterns: List[str]) ->
     if confidence >= 50:
         return "Enhanced Due Diligence (EDD)"
     return "Routine Monitoring"
+
+
+class AuditReportGenerator:
+    """Builds the full internal audit report served by /api/report."""
+
+    def generate_full_report(
+        self,
+        risk_summary: Dict,
+        explanations: Optional[Dict[str, Dict]] = None,
+    ) -> Dict:
+        explanations = explanations or {}
+        now = datetime.now()
+
+        flagged = risk_summary.get("flagged_accounts", 0)
+        clusters = risk_summary.get("clusters", [])
+        high_risk = risk_summary.get("high_risk_accounts", [])
+
+        return {
+            "report_id": f"AUDIT-{now.strftime('%Y%m%d%H%M%S')}",
+            "generated_at": now.isoformat(),
+            "reporting_entity": REPORTING_ENTITY,
+            "summary": {
+                "total_accounts_analyzed": risk_summary.get("total_accounts_analyzed", 0),
+                "flagged_accounts": flagged,
+                "clusters_detected": risk_summary.get("clusters_detected", len(clusters)),
+                "risk_distribution": risk_summary.get("risk_distribution", {}),
+            },
+            "high_risk_accounts": [
+                {
+                    **acc,
+                    "top_drivers": explanations.get(acc.get("account_id"), {}).get("top_drivers", []),
+                }
+                for acc in high_risk
+            ],
+            "clusters": clusters,
+            "explained_accounts": len(explanations),
+            "recommended_actions": _get_recommended_actions(flagged, len(clusters), 0, 0),
+        }

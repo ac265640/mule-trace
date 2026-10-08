@@ -32,3 +32,6 @@ frontend/dist/
 
 # Logs
 *.log
+
+# Local demo-video build workspace
+brag-output/

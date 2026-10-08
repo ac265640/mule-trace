@@ -4,6 +4,58 @@
 
 MuleTrace is an intelligent, **query-driven autonomous agent** designed to detect complex money laundering (AML) patterns and mule networks across multi-channel banking transaction data. Combining dynamic NLP intent parsing, selective tool orchestration, PyTorch Geometric Graph Neural Networks (GraphSAGE + GAT), and Gradient×Input feature attribution (XAI), MuleTrace delivers full explainability and automated Suspicious Activity Report (SAR) generation within a modern analyst workbench UI.
 
+**Find the mule. Show the evidence. File the SAR.**
+
+---
+
+## 🎬 Demo Video
+
+[![MuleTrace demo video: click to watch](docs/demo/poster.jpg)](docs/demo/muletrace-demo.mp4)
+
+▶️ **[Watch the 51-second demo](docs/demo/muletrace-demo.mp4)** (1080p, with sound). Every scene is real footage of the running app, following one flagged account from a plain-English question to a drafted SAR:
+
+| Time | Scene |
+|---|---|
+| 0:06 | **Pipeline Engine**: synthetic data → entity graph → GNN training → risk scoring in about 3.4 s |
+| 0:10 | **Agent Workbench**: *"Is customer ACC-00344 suspicious?"* → a 98.0% mule probability, *Escalate*, 2/2 citations verified |
+| 0:14 | **Account Risk** → **XAI Auditor**: ranked accounts, then *why* this one was flagged |
+| 0:21 | **Entity Graph** and **Mule Clusters**: accounts, devices, IPs and ATMs in one graph, plus the detected mule rings |
+| 0:28 | **Live Feed**: streaming transactions scored by the rule engine (shown as an 8× time-lapse) |
+| 0:31 | **Intelligence**: temporal, behavioural and NLP signals fused into one risk score |
+| 0:36 | **SAR Automation**: a FIU-IND Suspicious Activity Report, drafted in one click |
+| 0:39 | MuleTrace presented live |
+
+---
+
+## 🖥️ Analyst Workbench Tour
+
+The dashboard has nine tabs, each backed by the FastAPI endpoints listed in `backend/main.py`.
+
+| Tab | What it does |
+|---|---|
+| **Agent Workbench** | Ask in plain English. The agent plans, runs only the tools it needs, and answers with inline evidence citations (`[E1]`, `[E2]`) and a verification badge. |
+| **Pipeline Engine** | One click runs the full pipeline (data synthesis → unified entity graph → GraphSAGE + GAT training → risk analysis) and reports test AUC, average precision, flagged accounts and clusters. |
+| **Entity Graph** | Interactive force-directed graph of accounts, mule accounts, devices, IPs and ATMs, with suspicious edges highlighted. |
+| **Account Risk** | Every account ranked by GNN mule probability, with a recommended action and a one-click *Explain*. |
+| **Mule Clusters** | Detected mule rings with member counts, density, volume, velocity, hub account and channels. |
+| **Live Feed** | Server-sent-event stream of UPI / ATM / NEFT / RTGS / web transactions, scored in real time and colour-coded by severity. |
+| **XAI Auditor** | Plain-English summary, key risk drivers, suggested actions and Gradient × Input feature attributions for a flagged account. |
+| **SAR Automation** | Generates a FIU-IND-style Suspicious Activity Report with subjects, ring clusters, recommended regulatory actions and per-subject XAI. |
+| **Intelligence** | Fuses GNN, temporal (burst/relay), behavioural (dormancy, odd hours, device switching) and NLP transaction-note signals into one final risk score, with root causes and an automated decision playbook. |
+
+<details>
+<summary><b>📸 Screenshots of all 9 tabs</b></summary>
+
+| | |
+|---|---|
+| ![Pipeline Engine](docs/screenshots/01-pipeline.jpg) **Pipeline Engine** | ![Agent Workbench](docs/screenshots/02-agent-workbench.jpg) **Agent Workbench** |
+| ![Account Risk](docs/screenshots/03-account-risk.jpg) **Account Risk** | ![XAI Auditor](docs/screenshots/04-xai-auditor.jpg) **XAI Auditor** |
+| ![Entity Graph](docs/screenshots/05-entity-graph.jpg) **Entity Graph** | ![Mule Clusters](docs/screenshots/06-mule-clusters.jpg) **Mule Clusters** |
+| ![Live Feed](docs/screenshots/07-live-feed.jpg) **Live Feed** | ![Intelligence](docs/screenshots/08-intelligence.jpg) **Intelligence** |
+| ![SAR Automation](docs/screenshots/09-sar.jpg) **SAR Automation** | |
+
+</details>
+
 ---
 
 ## 🏛️ Comprehensive Architecture
@@ -98,6 +150,28 @@ Unlike static ML pipelines that process all data through rigid sequential steps,
 
 ---
 
+## 🛡️ Evidence-Grounded Answers & Guardrails
+
+The agent shouldn't guess about someone's bank account. Two layers make sure it doesn't.
+
+**Citation enforcer (`backend/agent/citation.py`)**: every claim must trace back to a concrete evidence record (a rule definition, a dataset aggregate, a transaction or a model score), cited inline as `[E1]`, `[E2]`, and so on. After the answer is written and before the analyst sees it, the enforcer checks:
+1. **Confidence threshold**: below it, the agent declines rather than guesses.
+2. **Minimum citations**: an uncited answer can't be verified.
+3. **Citation validity**: every cited ID must exist in the evidence registry, which catches hallucinated citations.
+4. **Claim coverage**: every sentence that states a number must cite evidence.
+5. **Numeric grounding**: every number must appear in the evidence it cites, which catches fabricated figures.
+
+If any check fails, the answer is withheld and the agent refuses instead. Answers that pass are shown with a badge such as *"2/2 citations verified · 2 numeric claims checked against evidence"*.
+
+**Guardrails (`backend/agent/guardrails.py`)**: three gates around the agent:
+1. **Input guard**: refuses prompt injection, requests to evade AML controls or tip off subjects, requests for customer personal data, and anything outside the AML domain.
+2. **Pre-generation decline**: refuses when there is nothing to ground an answer in (no dataset, no trained model, or an unknown account) instead of fabricating a risk profile.
+3. **Output guard**: scrubs PII from the narrative and adds an analyst-review disclaimer.
+
+Refusals come back with suggested queries that will work, and the workbench shows them as a refusal card.
+
+---
+
 ## 🧪 Detected AML Patterns
 
 | Pattern | Description | Detection Method |
@@ -156,7 +230,8 @@ MuleTrace operates on a multi-entity synthetic dataset modeling realistic retail
 | **Neural Network Engine** | PyTorch & PyTorch Geometric | GraphSAGE + GAT hybrid model |
 | **Explainable AI (XAI)** | Custom Feature Attribution Engine | Gradient × Input feature importance |
 | **SAR Automation** | FIU-IND Compliant Generator | Structured SAR JSON/PDF exporter |
-| **Frontend UI** | React 19 + Vite + Vanilla CSS | Dark mode glassmorphism design system |
+| **Trust Layer** | Citation enforcer + guardrails | Evidence-grounded answers, refusal on low confidence or unsafe input |
+| **Frontend UI** | React 19 + Vite + Tailwind + custom CSS | Light analyst-workbench theme |
 | **Graph Visualization** | `react-force-graph-2d` | Real-time interactive node-link network rendering |
 
 ---
@@ -254,9 +329,19 @@ The application will start immediately. Open your browser and navigate to:
 You can test MuleTrace using either the **Agent Workbench** tab in the web dashboard or directly via terminal `curl` commands.
 
 ### Option A: Via Web Workbench Dashboard (`http://localhost:5173`)
-1. Click on the **Agent Workbench** tab in the header.
-2. Click any preset query chip or type a natural language query in the chat box.
-3. Observe the real-time **Execution Trace Visualizer**, tool invocation steps, generated explanations, and one-click SAR escalation button.
+1. Open **Pipeline Engine** in the sidebar and click **Run Full Pipeline**. It takes a few seconds. Data is regenerated on every run, so account IDs change.
+2. Open **Account Risk** and copy a top-ranked account ID.
+3. Open **Agent Workbench**, click a suggested investigation card or type a query such as *"Is customer ACC-xxxxx suspicious?"*, and click **Run**.
+4. Check the cited answer, the verified-citations badge and the evidence sources. Expand **Agent Reasoning, Guardrails & Execution Steps** to see the plan.
+5. Explore the other tabs: **Explain** an account in XAI Auditor, **Load Graph**, **Start Feed**, **Analyze** in Intelligence, and **Generate SAR**.
+
+### Run the automated tests
+
+```bash
+python -m pytest backend/tests -q
+```
+
+The suite covers the guardrails and the citation enforcer: refusals for prompt injection and AML evasion, declines when there's no data or no trained model, grounded answers passing enforcement, and rejection of hallucinated citations, fabricated numbers, uncited claims and low-confidence answers.
 
 ### Option B: Via Terminal `curl` Commands
 
