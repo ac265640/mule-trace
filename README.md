@@ -10,9 +10,9 @@ MuleTrace is an intelligent, **query-driven autonomous agent** designed to detec
 
 ## 🎬 Demo Video
 
-[![MuleTrace demo video: click to watch](docs/demo/poster.jpg)](docs/demo/muletrace-demo.mp4)
+[![MuleTrace demo video: click to watch](docs/demo/poster.jpg)](https://ac265640.github.io/mule-trace/)
 
-▶️ **[Watch the 51-second demo](docs/demo/muletrace-demo.mp4)** (1080p, with sound). Every scene is real footage of the running app, following one flagged account from a plain-English question to a drafted SAR:
+▶️ **[Watch the 51-second demo](https://ac265640.github.io/mule-trace/)** (plays in your browser, 1080p with sound). Every scene is real footage of the running app, following one flagged account from a plain-English question to a drafted SAR:
 
 | Time | Scene |
 |---|---|

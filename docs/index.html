@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MuleTrace Demo</title>
+<meta name="description" content="MuleTrace: an AI agent that finds money mules, shows its evidence and drafts the SAR. 51-second demo.">
+<meta property="og:title" content="MuleTrace Demo">
+<meta property="og:description" content="Find the mule. Show the evidence. File the SAR.">
+<meta property="og:image" content="https://ac265640.github.io/mule-trace/demo/poster.jpg">
+<meta property="og:video" content="https://ac265640.github.io/mule-trace/demo/muletrace-demo.mp4">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=Space+Grotesk:wght@700&display=swap" rel="stylesheet">
+<style>
+  :root { --ink:#1a2332; --muted:#5b6678; --green:#006d3c; --bg:#f7f9fc; --card:#fff; --line:#e2e8f0 }
+  @media (prefers-color-scheme: dark) { :root { --ink:#e8edf4; --muted:#9aa5b8; --green:#49cc90; --bg:#0f141b; --card:#161d27; --line:#263041 } }
+  * { box-sizing:border-box; margin:0 }
+  body { background:var(--bg); color:var(--ink); font-family:Inter,system-ui,sans-serif; min-height:100vh;
+         display:flex; flex-direction:column; align-items:center; padding:40px 16px }
+  header { text-align:center; margin-bottom:28px }
+  h1 { font-family:'Space Grotesk',sans-serif; font-size:clamp(32px,5vw,52px); letter-spacing:-.02em }
+  header p { color:var(--muted); margin-top:8px; font-size:18px }
+  header p b { color:var(--green) }
+  .player { position:relative; width:min(1100px,100%); border-radius:18px; overflow:hidden; background:#000;
+            box-shadow:0 0 0 1px var(--line), 0 30px 80px -30px rgba(0,0,0,.45) }
+  video { display:block; width:100%; height:auto; aspect-ratio:16/9 }
+  #sound { position:absolute; right:16px; bottom:64px; border:0; cursor:pointer; font:600 15px Inter,sans-serif;
+           color:#fff; background:rgba(15,20,27,.78); padding:10px 16px; border-radius:999px }
+  .links { margin-top:24px; display:flex; gap:12px; flex-wrap:wrap; justify-content:center }
+  .links a { color:var(--ink); text-decoration:none; font-weight:600; padding:10px 18px; border-radius:999px;
+             background:var(--card); box-shadow:0 0 0 1px var(--line) }
+  .links a.primary { background:var(--green); color:#fff; box-shadow:none }
+</style>
+</head>
+<body>
+  <header>
+    <h1>MuleTrace</h1>
+    <p>Find the mule. Show the evidence. <b>File the SAR.</b></p>
+  </header>
+
+  <div class="player">
+    <video id="v" src="demo/muletrace-demo.mp4" poster="demo/poster.jpg" controls autoplay muted playsinline preload="auto"></video>
+    <button id="sound" type="button">🔊 Tap for sound</button>
+  </div>
+
+  <div class="links">
+    <a class="primary" href="https://github.com/ac265640/mule-trace">View the code on GitHub</a>
+    <a href="demo/muletrace-demo.mp4" download>Download MP4</a>
+  </div>
+
+<script>
+  const v = document.getElementById('v'), b = document.getElementById('sound');
+  const hide = () => { if (!v.muted) b.style.display = 'none'; };
+  b.onclick = () => { v.muted = false; v.currentTime = 0; v.play(); hide(); };
+  v.addEventListener('volumechange', hide);
+</script>
+</body>
+</html>
